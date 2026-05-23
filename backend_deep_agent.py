@@ -13,7 +13,8 @@ from tavily import TavilyClient
 
 # Use a Groq model by default.
 # You can override this via the MODEL env var in Render.
-MODEL = os.getenv("MODEL", "llama-3.3-70b-versatile")
+# Use a Groq model by default.
+MODEL = os.getenv("MODEL", "groq:llama-3.3-70b-versatile")
 
 # Environment variables you must set in Render B:
 # - MODEL (optional, overrides the default above)
