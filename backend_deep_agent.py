@@ -5,21 +5,22 @@ from typing import Optional, List
 
 from deepagents import create_deep_agent
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from tavily import TavilyClient
+
+from langchain_core.tools import tool  # explicit tool wrapper
 
 # ------------ Config ------------
 
-# Use a Groq model by default. You can override this via the MODEL env var in Render.
 MODEL = os.getenv("MODEL", "groq:llama-3.3-70b-versatile")
 
 # Environment variables you must set in Render B:
-# - MODEL (optional, overrides the default above)
+# - MODEL (optional)
 # - TAVILY_API_KEY
 # - GROQ_API_KEY
 tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
-# ------------ Filesystem tools (minimal) ------------
+# ------------ Filesystem tools ------------
 
 def glob(pattern: str) -> List[str]:
     """Return a list of file paths matching the glob pattern under the current directory."""
@@ -38,32 +39,41 @@ def write_file(path: str, content: str) -> str:
         f.write(content)
     return path
 
-# ------------ Internet search tool (stub for now) ------------
+# ------------ Internet search tool (explicit schema) ------------
 
-def internet_search(
-    query: str,
-    max_results: int | str = 5,
-    type: str = "general",
-) -> dict:
-    """Temporary stub to avoid Tavily 400 errors while testing the deep agent.
+class InternetSearchInput(BaseModel):
+    type: str = Field(
+        default="general",
+        description="Search type. Use 'general' for normal web search."
+    )
+    query: str = Field(
+        description="Search query string."
+    )
+    max_results: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Maximum number of results to return (1-10)."
+    )
 
-    Accepts (type, query, max_results) because the model calls it with these fields.
+@tool("internet_search", args_schema=InternetSearchInput)
+def internet_search_tool(params: InternetSearchInput) -> dict:
     """
-    # Normalize max_results in case it comes as a string
-    try:
-        max_results_int = int(max_results)
-    except Exception:
-        max_results_int = 5
+    Temporary stub internet search tool.
+    Accepts (type, query, max_results) to match how the model calls it.
+    """
+    max_results_int = params.max_results
 
+    # Stubbed response to avoid Tavily 400s while wiring everything.
     return {
-        "type": type,
-        "query": query,
+        "type": params.type,
+        "query": params.query,
         "max_results": max_results_int,
         "results": [
             {
                 "url": "https://example.com/deep-agents",
                 "title": "Stub result about deep agents",
-                "content": f"This is a stubbed search result for query: {query}.",
+                "content": f"This is a stubbed search result for query: {params.query}.",
                 "score": 1.0,
             }
         ],
@@ -71,7 +81,14 @@ def internet_search(
         "request_id": "local-stub",
     }
 
+# If you later want real Tavily, replace the body above with:
+#
+#     return tavily.search(
+#         query=params.query,
+#         max_results=params.max_results,
+#     )
 
+# ------------ Deep agent init (singleton) ------------
 
 research_instructions = (
     "You are a deep research agent. "
@@ -81,10 +98,8 @@ research_instructions = (
     "well-structured answer. Prefer factual, cited responses."
 )
 
-# Full tool list for this agent: filesystem + internet_search
-tools = [glob, read_file, write_file, internet_search]
+tools = [glob, read_file, write_file, internet_search_tool]
 
-# This creates a single deep agent instance reused for all requests.
 agent = create_deep_agent(
     model=MODEL,
     tools=tools,
@@ -98,7 +113,6 @@ app = FastAPI(title="Deep Agent Service", version="0.1.0")
 
 class DeepTaskRequest(BaseModel):
     query: str
-    # Optional: pass along some context from the calling chatbot
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
 
@@ -114,13 +128,6 @@ async def health():
 
 @app.post("/deep-task", response_model=DeepTaskResponse)
 async def deep_task(payload: DeepTaskRequest):
-    """
-    Run a deep-agent task.
-
-    The caller (your existing chatbot backend) sends a query.
-    We wrap it into the Deep Agents message format, invoke the agent,
-    and return only the final answer text.
-    """
     try:
         result = agent.invoke(
             {
@@ -150,10 +157,13 @@ async def deep_task(payload: DeepTaskRequest):
     return DeepTaskResponse(response=content)
 
 
-@app.get("/test-tavily")
-async def test_tavily():
+@app.get("/test-search")
+async def test_search():
+    """Test the internet_search tool directly."""
     try:
-        result = internet_search("LangGraph deep agents", max_results=1)
+        result = internet_search_tool.invoke(
+            {"type": "general", "query": "LangGraph deep agents", "max_results": 3}
+        )
         return {"ok": True, "result": result}
     except Exception as e:
         return {"ok": False, "error": str(e)}
