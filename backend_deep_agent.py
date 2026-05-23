@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # llama-3.1-8b-instant has the most reliable tool-calling on Groq.
 # You can override via the MODEL env var in Render, but avoid llama-3.3-70b-versatile
 # — it generates malformed tool calls (appends JSON to the function name).
-MODEL = os.getenv("MODEL", "groq:llama-3.1-8b-instant")
+MODEL = os.getenv("MODEL", "groq:meta-llama/llama-4-scout-17b-16e-instruct")
 
 # Required environment variables (validated at startup):
 # - TAVILY_API_KEY
