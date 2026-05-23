@@ -3,24 +3,20 @@
 import os
 from typing import Optional
 
+from deepagents import create_deep_agent, default_tools
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-
-from deepagents import create_deep_agent
 from tavily import TavilyClient
 
 # ------------ Config ------------
 
-# Use a Groq model by default.
-# You can override this via the MODEL env var in Render.
-# Use a Groq model by default.
+# Use a Groq model by default. You can override this via the MODEL env var in Render.
 MODEL = os.getenv("MODEL", "groq:llama-3.3-70b-versatile")
 
 # Environment variables you must set in Render B:
 # - MODEL (optional, overrides the default above)
 # - TAVILY_API_KEY
 # - GROQ_API_KEY
-
 tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 # ------------ Tools ------------
@@ -45,6 +41,10 @@ def internet_search(
         "request_id": "local-stub",
     }
 
+# Include Deep Agents' default tools (filesystem, glob, etc.) plus your custom search tool.
+base_tools = default_tools()
+all_tools = base_tools + [internet_search]
+
 # ------------ Deep agent init (singleton) ------------
 
 research_instructions = (
@@ -58,7 +58,7 @@ research_instructions = (
 # This creates a single deep agent instance reused for all requests.
 agent = create_deep_agent(
     model=MODEL,
-    tools=[internet_search],
+    tools=all_tools,
     system_prompt=research_instructions,
 )
 
@@ -124,6 +124,7 @@ async def deep_task(payload: DeepTaskRequest):
         )
 
     return DeepTaskResponse(response=content)
+
 
 @app.get("/test-tavily")
 async def test_tavily():
