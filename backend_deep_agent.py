@@ -33,21 +33,21 @@ def internet_search(
         include_raw_content=False,
     )
 
-# You can add more tools here later (RAG, YouTube, code runner, etc.)
-
 # ------------ Deep agent init (singleton) ------------
+
+research_instructions = (
+    "You are a deep research agent. "
+    "For each user query, break the task into clear steps, "
+    "use the internet_search tool as needed, "
+    "take notes in your internal files, and then produce a concise, "
+    "well-structured answer. Prefer factual, cited responses."
+)
 
 # This creates a single deep agent instance reused for all requests.
 agent = create_deep_agent(
     model=MODEL,
     tools=[internet_search],
-    instructions=(
-        "You are a deep research agent. "
-        "For each user query, break the task into clear steps, "
-        "use the internet_search tool as needed, "
-        "take notes in your internal files, and then produce a concise, "
-        "well-structured answer. Prefer factual, cited responses."
-    ),
+    system_prompt=research_instructions,
 )
 
 # ------------ FastAPI setup ------------

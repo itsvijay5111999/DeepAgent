@@ -1,4 +1,4 @@
 fastapi
 uvicorn[standard]
-deepagents
+deepagents>=0.0.10
 tavily-python
