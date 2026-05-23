@@ -15,8 +15,10 @@ logger = logging.getLogger(__name__)
 
 # ------------ Config ------------
 
-# Use a Groq model by default. You can override this via the MODEL env var in Render.
-MODEL = os.getenv("MODEL", "groq:llama-3.3-70b-versatile")
+# llama-3.1-8b-instant has the most reliable tool-calling on Groq.
+# You can override via the MODEL env var in Render, but avoid llama-3.3-70b-versatile
+# — it generates malformed tool calls (appends JSON to the function name).
+MODEL = os.getenv("MODEL", "groq:llama-3.1-8b-instant")
 
 # Required environment variables (validated at startup):
 # - TAVILY_API_KEY
@@ -74,32 +76,29 @@ def write_file(path: str, content: str) -> str:
 
 # ------------ Internet search tool (real Tavily) ------------
 
-def internet_search(
-    query: str,
-    max_results: Union[int, str] = 5,
-    type: str = "general",
-) -> dict:
+def internet_search(query: str, max_results: Union[int, str] = 5) -> dict:
     """
-    Search the internet using Tavily.
+    Search the internet for up-to-date information.
+
+    Use this tool whenever you need to find recent facts, news, or data.
 
     Args:
-        query:       The search query string.
-        max_results: Maximum number of results to return (default 5).
-        type:        Search type hint — passed through for compatibility.
+        query:       Plain-English search query (e.g. "latest AI research 2024").
+        max_results: How many results to return. Must be a number between 1 and 10.
 
     Returns:
-        Tavily search result dict.
+        A dict with a 'results' list. Each result has 'title', 'url', and 'content'.
     """
-    # Normalize max_results in case the model passes it as a string
+    # Normalize max_results — model sometimes passes a string
     try:
         max_results_int = int(max_results)
     except (ValueError, TypeError):
         max_results_int = 5
 
-    # Clamp to a sensible range accepted by Tavily (1–20)
-    max_results_int = max(1, min(max_results_int, 20))
+    # Clamp to Tavily's accepted range
+    max_results_int = max(1, min(max_results_int, 10))
 
-    logger.info("Tavily search | query=%r  max_results=%d  type=%s", query, max_results_int, type)
+    logger.info("Tavily search | query=%r  max_results=%d", query, max_results_int)
 
     try:
         result = get_tavily().search(query=query, max_results=max_results_int)
@@ -114,9 +113,12 @@ def internet_search(
 
 research_instructions = (
     "You are a deep research agent. "
-    "For each user query, break the task into clear steps, "
-    "use the internet_search tool as needed, "
-    "take notes in your internal files, and then produce a concise, "
+    "For each user query, break the task into clear steps. "
+    "When you need current information, call the internet_search tool with ONLY these two arguments: "
+    "  - query (string): the search terms "
+    "  - max_results (integer): how many results you want (default 5) "
+    "Do NOT pass any other arguments like 'type' to internet_search. "
+    "After gathering results, take notes in your internal files, then produce a concise, "
     "well-structured answer. Prefer factual, cited responses."
 )
 
