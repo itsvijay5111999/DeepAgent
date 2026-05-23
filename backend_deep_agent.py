@@ -42,12 +42,23 @@ def write_file(path: str, content: str) -> str:
 
 def internet_search(
     query: str,
-    max_results: int = 5,
+    max_results: int | str = 5,
+    type: str = "general",
 ) -> dict:
-    """Temporary stub to avoid Tavily 400 errors while testing the deep agent."""
+    """Temporary stub to avoid Tavily 400 errors while testing the deep agent.
+
+    Accepts (type, query, max_results) because the model calls it with these fields.
+    """
+    # Normalize max_results in case it comes as a string
+    try:
+        max_results_int = int(max_results)
+    except Exception:
+        max_results_int = 5
+
     return {
+        "type": type,
         "query": query,
-        "max_results": max_results,
+        "max_results": max_results_int,
         "results": [
             {
                 "url": "https://example.com/deep-agents",
@@ -60,14 +71,7 @@ def internet_search(
         "request_id": "local-stub",
     }
 
-# If you later want the real Tavily search, replace the function above with:
-#
-# def internet_search(query: str, max_results: int = 5) -> dict:
-#     if max_results < 1 or max_results > 5:
-#         max_results = 3
-#     return tavily.search(query=query, max_results=max_results)
 
-# ------------ Deep agent init (singleton) ------------
 
 research_instructions = (
     "You are a deep research agent. "
