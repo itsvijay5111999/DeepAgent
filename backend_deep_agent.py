@@ -1,7 +1,7 @@
 # backend_deep_agent.py
 
 import os
-from typing import Optional
+from typing import Optional, List
 
 from deepagents import create_deep_agent
 from fastapi import FastAPI, HTTPException
@@ -19,7 +19,26 @@ MODEL = os.getenv("MODEL", "groq:llama-3.3-70b-versatile")
 # - GROQ_API_KEY
 tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
-# ------------ Tools ------------
+# ------------ Filesystem tools (minimal) ------------
+
+def glob(pattern: str) -> List[str]:
+    """Return a list of file paths matching the glob pattern under the current directory."""
+    import glob as pyglob
+    return pyglob.glob(pattern, recursive=True)
+
+def read_file(path: str) -> str:
+    """Read text from a file."""
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+def write_file(path: str, content: str) -> str:
+    """Write text to a file, returning the path."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
+
+# ------------ Internet search tool (stub for now) ------------
 
 def internet_search(
     query: str,
@@ -41,6 +60,13 @@ def internet_search(
         "request_id": "local-stub",
     }
 
+# If you later want the real Tavily search, replace the function above with:
+#
+# def internet_search(query: str, max_results: int = 5) -> dict:
+#     if max_results < 1 or max_results > 5:
+#         max_results = 3
+#     return tavily.search(query=query, max_results=max_results)
+
 # ------------ Deep agent init (singleton) ------------
 
 research_instructions = (
@@ -51,12 +77,13 @@ research_instructions = (
     "well-structured answer. Prefer factual, cited responses."
 )
 
+# Full tool list for this agent: filesystem + internet_search
+tools = [glob, read_file, write_file, internet_search]
+
 # This creates a single deep agent instance reused for all requests.
-# Deep Agents will include its own default tools (filesystem, todos, etc.);
-# we add our custom internet_search via extra_tools.
 agent = create_deep_agent(
     model=MODEL,
-    extra_tools=[internet_search],
+    tools=tools,
     system_prompt=research_instructions,
 )
 
@@ -91,7 +118,6 @@ async def deep_task(payload: DeepTaskRequest):
     and return only the final answer text.
     """
     try:
-        # Deep Agents expects a messages list; we only send a single user turn here.
         result = agent.invoke(
             {
                 "messages": [
@@ -100,17 +126,13 @@ async def deep_task(payload: DeepTaskRequest):
             }
         )
     except Exception as e:
-        # Return a clean 500 error if the agent fails
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Deep Agents returns a dict containing "messages"; last message is final answer.
     try:
         messages = result["messages"]
         final_msg = messages[-1]
-        # final_msg.content may be a string or list of content parts depending on model
         content = getattr(final_msg, "content", None) or final_msg.get("content")
         if isinstance(content, list):
-            # Simple join for multi-part contents
             content = " ".join(
                 part.get("text", "") if isinstance(part, dict) else str(part)
                 for part in content
