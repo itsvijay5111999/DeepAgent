@@ -3,7 +3,7 @@
 import os
 from typing import Optional
 
-from deepagents import create_deep_agent, default_tools
+from deepagents import create_deep_agent
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from tavily import TavilyClient
@@ -41,10 +41,6 @@ def internet_search(
         "request_id": "local-stub",
     }
 
-# Include Deep Agents' default tools (filesystem, glob, etc.) plus your custom search tool.
-base_tools = default_tools()
-all_tools = base_tools + [internet_search]
-
 # ------------ Deep agent init (singleton) ------------
 
 research_instructions = (
@@ -56,9 +52,11 @@ research_instructions = (
 )
 
 # This creates a single deep agent instance reused for all requests.
+# Deep Agents will include its own default tools (filesystem, todos, etc.);
+# we add our custom internet_search via extra_tools.
 agent = create_deep_agent(
     model=MODEL,
-    tools=all_tools,
+    extra_tools=[internet_search],
     system_prompt=research_instructions,
 )
 
