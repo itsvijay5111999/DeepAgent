@@ -1,0 +1,121 @@
+# backend_deep_agent.py
+
+import os
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+from deepagents import create_deep_agent
+from tavily import TavilyClient
+
+# ------------ Config ------------
+
+# Environment variables you must set in Render B:
+# - MODEL (e.g. "openai:gpt-4o-mini" or "groq:llama-3.1-70b")
+# - TAVILY_API_KEY
+# - (Plus provider-specific keys like OPENAI_API_KEY, GROQ_API_KEY, etc.)
+
+MODEL = os.getenv("MODEL", "openai:gpt-4o-mini")
+
+tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+
+# ------------ Tools ------------
+
+def internet_search(
+    query: str,
+    max_results: int = 5,
+) -> dict:
+    """Run a focused web search and return structured results."""
+    return tavily.search(
+        query=query,
+        max_results=max_results,
+        include_raw_content=False,
+    )
+
+# You can add more tools here later (RAG, YouTube, code runner, etc.)
+
+# ------------ Deep agent init (singleton) ------------
+
+# This creates a single deep agent instance reused for all requests.
+agent = create_deep_agent(
+    model=MODEL,
+    tools=[internet_search],
+    instructions=(
+        "You are a deep research agent. "
+        "For each user query, break the task into clear steps, "
+        "use the internet_search tool as needed, "
+        "take notes in your internal files, and then produce a concise, "
+        "well-structured answer. Prefer factual, cited responses."
+    ),
+)
+
+# ------------ FastAPI setup ------------
+
+app = FastAPI(title="Deep Agent Service", version="0.1.0")
+
+
+class DeepTaskRequest(BaseModel):
+    query: str
+    # Optional: pass along some context from the calling chatbot
+    user_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+
+
+class DeepTaskResponse(BaseModel):
+    response: str
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": "deep-agent"}
+
+
+@app.post("/deep-task", response_model=DeepTaskResponse)
+async def deep_task(payload: DeepTaskRequest):
+    """
+    Run a deep-agent task.
+
+    The caller (your existing chatbot backend) sends a query.
+    We wrap it into the Deep Agents message format, invoke the agent,
+    and return only the final answer text.
+    """
+    try:
+        # Deep Agents expects a messages list; we only send a single user turn here.
+        result = agent.invoke(
+            {
+                "messages": [
+                    {"role": "user", "content": payload.query}
+                ]
+            }
+        )
+    except Exception as e:
+        # Return a clean 500 error if the agent fails
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Deep Agents returns a dict containing "messages"; last message is final answer.
+    try:
+        messages = result["messages"]
+        final_msg = messages[-1]
+        # final_msg.content may be a string or list of content parts depending on model
+        content = getattr(final_msg, "content", None) or final_msg.get("content")
+        if isinstance(content, list):
+            # Simple join for multi-part contents
+            content = " ".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Deep agent returned an unexpected format",
+        )
+
+    return DeepTaskResponse(response=content)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("backend_deep_agent:app", host="0.0.0.0", port=port)
