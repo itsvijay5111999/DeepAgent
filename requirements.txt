@@ -2,3 +2,5 @@ fastapi
 uvicorn[standard]
 deepagents>=0.0.10
 tavily-python
+langchain-groq
+groq

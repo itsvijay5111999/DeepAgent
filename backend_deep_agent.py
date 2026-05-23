@@ -11,12 +11,14 @@ from tavily import TavilyClient
 
 # ------------ Config ------------
 
-# Environment variables you must set in Render B:
-# - MODEL (e.g. "openai:gpt-4o-mini" or "groq:llama-3.1-70b")
-# - TAVILY_API_KEY
-# - (Plus provider-specific keys like OPENAI_API_KEY, GROQ_API_KEY, etc.)
+# Use a Groq model by default.
+# You can override this via the MODEL env var in Render.
+MODEL = os.getenv("MODEL", "groq:llama-3.1-70b-versatile")
 
-MODEL = os.getenv("MODEL", "openai:gpt-4o-mini")
+# Environment variables you must set in Render B:
+# - MODEL (optional, overrides the default above)
+# - TAVILY_API_KEY
+# - GROQ_API_KEY
 
 tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
