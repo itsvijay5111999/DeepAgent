@@ -1,36 +1,68 @@
-# backend_deep_agent.py
-
+import asyncio
+import logging
 import os
-from typing import Optional, List
+from typing import Optional, Union
 
 from deepagents import create_deep_agent
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from tavily import TavilyClient
 
-from langchain_core.tools import tool  # explicit tool wrapper
+# ------------ Logging ------------
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ------------ Config ------------
 
+# Use a Groq model by default. You can override this via the MODEL env var in Render.
 MODEL = os.getenv("MODEL", "groq:llama-3.3-70b-versatile")
 
-# Environment variables you must set in Render B:
-# - MODEL (optional)
+# Required environment variables (validated at startup):
 # - TAVILY_API_KEY
 # - GROQ_API_KEY
-tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+# - MODEL (optional)
+
+# ------------ Startup validation ------------
+
+def _require_env(name: str) -> str:
+    """Raise a clear error at startup if a required env var is missing."""
+    value = os.environ.get(name)
+    if not value:
+        raise EnvironmentError(
+            f"Required environment variable '{name}' is not set. "
+            f"Please add it in your Render dashboard under Environment."
+        )
+    return value
+
+
+# ------------ Tavily client (lazy-initialized) ------------
+
+_tavily_client: Optional[TavilyClient] = None
+
+
+def get_tavily() -> TavilyClient:
+    """Return the shared TavilyClient, initializing it on first call."""
+    global _tavily_client
+    if _tavily_client is None:
+        api_key = _require_env("TAVILY_API_KEY")
+        _tavily_client = TavilyClient(api_key=api_key)
+    return _tavily_client
+
 
 # ------------ Filesystem tools ------------
 
-def glob(pattern: str) -> List[str]:
+def glob(pattern: str) -> list[str]:
     """Return a list of file paths matching the glob pattern under the current directory."""
     import glob as pyglob
     return pyglob.glob(pattern, recursive=True)
+
 
 def read_file(path: str) -> str:
     """Read text from a file."""
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
+
 
 def write_file(path: str, content: str) -> str:
     """Write text to a file, returning the path."""
@@ -39,56 +71,46 @@ def write_file(path: str, content: str) -> str:
         f.write(content)
     return path
 
-# ------------ Internet search tool (explicit schema) ------------
 
-class InternetSearchInput(BaseModel):
-    type: str = Field(
-        default="general",
-        description="Search type. Use 'general' for normal web search."
-    )
-    query: str = Field(
-        description="Search query string."
-    )
-    max_results: int = Field(
-        default=5,
-        ge=1,
-        le=10,
-        description="Maximum number of results to return (1-10)."
-    )
+# ------------ Internet search tool (real Tavily) ------------
 
-@tool("internet_search", args_schema=InternetSearchInput)
-def internet_search_tool(params: InternetSearchInput) -> dict:
+def internet_search(
+    query: str,
+    max_results: Union[int, str] = 5,
+    type: str = "general",
+) -> dict:
     """
-    Temporary stub internet search tool.
-    Accepts (type, query, max_results) to match how the model calls it.
+    Search the internet using Tavily.
+
+    Args:
+        query:       The search query string.
+        max_results: Maximum number of results to return (default 5).
+        type:        Search type hint — passed through for compatibility.
+
+    Returns:
+        Tavily search result dict.
     """
-    max_results_int = params.max_results
+    # Normalize max_results in case the model passes it as a string
+    try:
+        max_results_int = int(max_results)
+    except (ValueError, TypeError):
+        max_results_int = 5
 
-    # Stubbed response to avoid Tavily 400s while wiring everything.
-    return {
-        "type": params.type,
-        "query": params.query,
-        "max_results": max_results_int,
-        "results": [
-            {
-                "url": "https://example.com/deep-agents",
-                "title": "Stub result about deep agents",
-                "content": f"This is a stubbed search result for query: {params.query}.",
-                "score": 1.0,
-            }
-        ],
-        "response_time": 0.01,
-        "request_id": "local-stub",
-    }
+    # Clamp to a sensible range accepted by Tavily (1–20)
+    max_results_int = max(1, min(max_results_int, 20))
 
-# If you later want real Tavily, replace the body above with:
-#
-#     return tavily.search(
-#         query=params.query,
-#         max_results=params.max_results,
-#     )
+    logger.info("Tavily search | query=%r  max_results=%d  type=%s", query, max_results_int, type)
 
-# ------------ Deep agent init (singleton) ------------
+    try:
+        result = get_tavily().search(query=query, max_results=max_results_int)
+    except Exception as exc:
+        logger.error("Tavily search failed: %s", exc)
+        raise RuntimeError(f"Internet search failed: {exc}") from exc
+
+    return result
+
+
+# ------------ Agent factory ------------
 
 research_instructions = (
     "You are a deep research agent. "
@@ -98,17 +120,29 @@ research_instructions = (
     "well-structured answer. Prefer factual, cited responses."
 )
 
-tools = [glob, read_file, write_file, internet_search_tool]
+tools = [glob, read_file, write_file, internet_search]
 
-agent = create_deep_agent(
-    model=MODEL,
-    tools=tools,
-    system_prompt=research_instructions,
-)
+
+def _make_agent():
+    """
+    Create a fresh deep-agent instance.
+
+    Called once at startup (after env-var validation) and again
+    per-request if the agent is stateful.
+    """
+    # Validate GROQ_API_KEY early so failures surface clearly
+    _require_env("GROQ_API_KEY")
+
+    return create_deep_agent(
+        model=MODEL,
+        tools=tools,
+        system_prompt=research_instructions,
+    )
+
 
 # ------------ FastAPI setup ------------
 
-app = FastAPI(title="Deep Agent Service", version="0.1.0")
+app = FastAPI(title="Deep Agent Service", version="0.2.0")
 
 
 class DeepTaskRequest(BaseModel):
@@ -121,56 +155,125 @@ class DeepTaskResponse(BaseModel):
     response: str
 
 
+# ------------ Lifecycle events ------------
+
+@app.on_event("startup")
+async def startup_event():
+    """Validate all required env vars at startup so Render shows a clear error."""
+    _require_env("TAVILY_API_KEY")
+    _require_env("GROQ_API_KEY")
+    logger.info("Environment validated. Model: %s", MODEL)
+
+
+# ------------ Helper: extract text from agent result ------------
+
+def _extract_content(result: dict) -> str:
+    """
+    Safely pull the final text content out of the agent result dict.
+
+    Handles both object-style messages (LangChain AIMessage) and plain dicts.
+    """
+    messages = result.get("messages")
+    if not messages:
+        raise ValueError("Agent result contains no messages.")
+
+    final_msg = messages[-1]
+
+    # Object-style (e.g. LangChain BaseMessage)
+    if hasattr(final_msg, "content"):
+        content = final_msg.content
+    # Dict-style
+    elif isinstance(final_msg, dict):
+        content = final_msg.get("content", "")
+    else:
+        raise ValueError(f"Unrecognised message type: {type(final_msg)}")
+
+    # Content can be a list of blocks (tool-use responses)
+    if isinstance(content, list):
+        content = " ".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        ).strip()
+
+    if not content:
+        raise ValueError("Agent returned an empty response.")
+
+    return content
+
+
+# ------------ Routes ------------
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "deep-agent"}
+    return {"status": "ok", "service": "deep-agent", "model": MODEL}
 
 
 @app.post("/deep-task", response_model=DeepTaskResponse)
 async def deep_task(payload: DeepTaskRequest):
+    """
+    Run a deep-agent task.
+
+    Each request gets its own agent instance to avoid shared state
+    across concurrent requests.
+    """
+    logger.info(
+        "deep_task | user_id=%s  conversation_id=%s  query=%r",
+        payload.user_id,
+        payload.conversation_id,
+        payload.query,
+    )
+
+    # Create a fresh agent per request (safe for concurrent use)
     try:
-        result = agent.invoke(
-            {
-                "messages": [
-                    {"role": "user", "content": payload.query}
-                ]
-            }
+        agent = _make_agent()
+    except EnvironmentError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Run the (blocking) agent in a thread with a 120-second timeout
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                agent.invoke,
+                {
+                    "messages": [
+                        {"role": "user", "content": payload.query}
+                    ]
+                },
+            ),
+            timeout=120,
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Deep agent timed out after 120 seconds.")
+    except Exception as exc:
+        logger.exception("Agent invocation failed")
+        raise HTTPException(status_code=500, detail=str(exc))
 
     try:
-        messages = result["messages"]
-        final_msg = messages[-1]
-        content = getattr(final_msg, "content", None) or final_msg.get("content")
-        if isinstance(content, list):
-            content = " ".join(
-                part.get("text", "") if isinstance(part, dict) else str(part)
-                for part in content
-            )
-    except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="Deep agent returned an unexpected format",
-        )
+        content = _extract_content(result)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
     return DeepTaskResponse(response=content)
 
 
-@app.get("/test-search")
-async def test_search():
-    """Test the internet_search tool directly."""
+@app.get("/test-tavily")
+async def test_tavily():
+    """
+    Health-check that exercises the real Tavily API.
+    Useful to verify the TAVILY_API_KEY is valid after deployment.
+    """
     try:
-        result = internet_search_tool.invoke(
-            {"type": "general", "query": "LangGraph deep agents", "max_results": 3}
-        )
+        result = internet_search("LangGraph deep agents", max_results=1)
         return {"ok": True, "result": result}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    except Exception as exc:
+        logger.error("Tavily test failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
 
+
+# ------------ Entrypoint ------------
 
 if __name__ == "__main__":
     import uvicorn
 
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("backend_deep_agent:app", host="0.0.0.0", port=port)
+    uvicorn.run("backend_deep_agent:app", host="0.0.0.0", port=port, reload=False)
