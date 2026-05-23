@@ -29,12 +29,21 @@ def internet_search(
     query: str,
     max_results: int = 5,
 ) -> dict:
-    """Run a focused web search and return structured results."""
-    return tavily.search(
-        query=query,
-        max_results=max_results,
-        include_raw_content=False,
-    )
+    """Temporary stub to avoid Tavily 400 errors while testing the deep agent."""
+    return {
+        "query": query,
+        "max_results": max_results,
+        "results": [
+            {
+                "url": "https://example.com/deep-agents",
+                "title": "Stub result about deep agents",
+                "content": f"This is a stubbed search result for query: {query}.",
+                "score": 1.0,
+            }
+        ],
+        "response_time": 0.01,
+        "request_id": "local-stub",
+    }
 
 # ------------ Deep agent init (singleton) ------------
 
