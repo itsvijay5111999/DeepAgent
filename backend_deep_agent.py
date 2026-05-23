@@ -116,6 +116,14 @@ async def deep_task(payload: DeepTaskRequest):
 
     return DeepTaskResponse(response=content)
 
+@app.get("/test-tavily")
+async def test_tavily():
+    try:
+        result = internet_search("LangGraph deep agents", max_results=1)
+        return {"ok": True, "result": result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 
 if __name__ == "__main__":
     import uvicorn
